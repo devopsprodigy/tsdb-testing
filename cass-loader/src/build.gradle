@@ -1,0 +1,30 @@
+plugins {
+    id 'java'
+}
+
+group 'tsdbt'
+version '1.0-SNAPSHOT'
+
+sourceCompatibility = 1.8
+
+repositories {
+    mavenCentral()
+    maven {
+        url "http://maven.gridgain.com/nexus/content/repositories/external/"
+    }
+}
+
+dependencies {
+    compile group: 'com.datastax.cassandra', name: 'cassandra-driver-core', version:'3.5.1'
+    compile group: 'ch.qos.logback', name: 'logback-classic', version: '1.2.3'
+    compile "org.apache.ignite:ignite-core:2.7.0"
+    compile "org.apache.ignite:ignite-indexing:2.7.0"
+    compile "org.apache.ignite:ignite-spring:2.7.0"
+    compile  "com.google.guava:guava:19.0.1-jre"
+    compile "org.apache.ignite:ignite-cassandra-store:2.7.0"
+    compile "org.apache.ignite:ignite-cassandra-serializers:2.7.0"
+    compile group: 'commons-dbcp', name: 'commons-dbcp', version: '1.4'
+    compile group: 'commons-pool', name: 'commons-pool', version: '1.4'
+
+
+}

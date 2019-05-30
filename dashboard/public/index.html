@@ -1,0 +1,526 @@
+<html>
+<head>
+    <title>TSDB Loader Console - DevOpsProdigy</title>
+    <style>
+        pre#container p {
+            margin: 0;
+        }
+        section {
+            margin: 10px;
+        }
+        div {
+            margin: 3px;
+        }
+        #node-replies {
+            width: 200px;
+        }
+    </style>
+    <script>
+        let target = {
+            intIp: '',
+            extIp: '',
+            name: '',
+            host: '',
+        };
+        let allWorkers = {};
+        let allTargets = {
+            percona: "172.31.35.81",
+            clickhouse1: "172.31.4.246",
+            cassandra1: "172.31.46.202",
+            influxdb: "172.31.44.21",
+            prometheus: "172.31.39.178",
+        };
+        let currentWs;
+        let targetServerEndpoint = "";
+
+        let currentStats = {
+            total: 0
+        };
+
+        function syncStatInfo() {
+            $("#rcv_so_far").text(currentStats.total);
+        }
+        function resetInfo() {
+            currentStats.total = 0;
+            $("#container").empty();
+            syncStatInfo();
+            $.ajax({
+                url: `http://${targetServerEndpoint}/reset`,
+                method: 'POST'
+            });
+        }
+        function processStatsLine(line) {
+            let ar;
+            if (ar = line.match(/ rcv (\d+) @/)) {
+                currentStats.total += parseInt(ar[1]);
+            }
+            syncStatInfo();
+        }
+        function countersChanged() {
+            let conts = parseInt($("#param_counters").val(), 10);
+            $("#param_servers").val(Math.ceil(conts / 125));
+            updatePlanned();
+        }
+        function serversChanged() {
+            let servrs = parseInt($("#param_servers").val(), 10);
+            $("#param_counters").val(servrs * 125);
+            updatePlanned();
+        }
+        function getParams() {
+            const name = $("#param_target").val();
+            let targetIp = allTargets[name];
+            if (-1 === targetIp.indexOf(":")) {
+                targetIp += ":4323";
+            }
+            return {
+                counters: parseInt($("#param_counters").val(), 10),
+                servers: parseInt($("#param_servers").val(), 10),
+                interval: parseInt($("#param_interval").val(), 10),
+                target: targetIp,
+                duration: parseInt($("#param_duration").val(), 0)
+            };
+        }
+        function getWorkerIps() {
+            let ips = [];
+            for (let ip of $("#workers_list").val()) {
+                ips.push(ip);
+            }
+            return ips;
+        }
+
+        function updatePlanned() {
+            const ps = getParams();
+            const iters = Math.floor(ps.duration * 60 / ps.interval),
+                itersPerMin = Math.floor(60 / ps.interval),
+                valsPerMin = itersPerMin * ps.counters,
+                valsTotal = iters * ps.counters
+            ;
+            $("#planned_total").text(valsTotal);
+            $("#planned_per_min").text(valsPerMin);
+            $("#planned_per_10sec").text(Math.round(valsPerMin / 6));
+            $("#planned_per_sec").text(valsPerMin / 60);
+        }
+
+        function findWorker(extIp) {
+            for (let name in allWorkers) {
+                if (extIp == allWorkers[name]) return name;
+            }
+        }
+
+        function startWorkload() {
+            const ips = getWorkerIps();
+            const params = getParams();
+            const bunch_size = Math.ceil(params.counters / ips.length);
+
+
+            updatePlanned();
+            let from_cuid = 1;
+            const replies = $("#node-replies").empty();
+            for (let ip of ips) {
+                const cnt_left = params.counters - from_cuid + 1;
+                const bs = bunch_size < cnt_left ? bunch_size : cnt_left;
+                (function (ip) {
+                    const workerName = findWorker(ip);
+                    $.ajax({
+                        url: `http://${ip}:30003/start`,
+                        method: 'POST',
+                        dataType: "json",
+                        data: {
+                            target: params.target,
+                            first_cuid: from_cuid,
+                            counters: bs,
+                            interval: params.interval,
+                            duration: params.duration
+                        }
+                    }).done(data => {
+                        const status = data.ok ? "started" : `err: ${data.error}`;
+                        replies.append(`<div>${workerName}: ${status}</div>`);
+                    }).fail((xhr, errorText, err) => {
+                        replies.append(`<div>${workerName}: error: ${errorText} ${err}</div>`);
+                    });
+                })(ip);
+                from_cuid += bs
+            }
+        }
+        function initializeWorkers() {
+            const ips = getWorkerIps();
+            const replies = $("#node-replies").empty();
+            for (let ip of ips) {
+                (function (ip) {
+                    const workerName = findWorker(ip);
+                    $.ajax({
+                        url: `http://${ip}:30003/status`,
+                        method: 'get',
+                        dataType: "json"
+                    }).done(data => {
+                        replies.append(`<div>${workerName}: ${data.status}</div>`);
+                    }).fail((xhr, errorText, err) => {
+                        replies.append(`<div>${workerName}: error: ${errorText} ${err}</div>`);
+                    });
+                })(ip);
+            }
+        }
+        function modifyWorkload() {
+            const ips = getWorkerIps();
+            const params = getParams();
+            const bunch_size = Math.ceil(params.counters / ips.length);
+
+            let from_cuid = 1;
+            const replies = $("#node-replies").empty();
+            for (let ip of ips) {
+                const cnt_left = params.counters - from_cuid + 1;
+                const bs = bunch_size < cnt_left ? bunch_size : cnt_left;
+                (function (ip) {
+                    const workerName = findWorker(ip);
+                    $.ajax({
+                        url: `http://${ip}:30003/modify`,
+                        method: 'POST',
+                        dataType: "json",
+                        data: {
+                            first_cuid: from_cuid,
+                            counters: bs,
+                            interval: params.interval
+                        }
+                    }).done(data => {
+                        const status = data.ok ? "modified" : `err: ${data.error}`;
+                        replies.append(`<div>${workerName}: ${status}</div>`);
+                    }).fail((xhr, errorText, err) => {
+                        replies.append(`<div>${workerName}: error: ${errorText} ${err}</div>`);
+                    });
+                })(ip);
+                from_cuid += bs
+            }
+        }
+        function stopWorkload() {
+            const ips = getWorkerIps();
+            const replies = $("#node-replies").empty();
+            for (let ip of ips) {
+                (function (ip) {
+                    const workerName = findWorker(ip);
+                    $.ajax({
+                        url: `http://${ip}:30003/stop`,
+                        dataType: "json",
+                        method: 'POST'
+                    }).done(data => {
+                        const status = data.ok ? "stopped" : `err: ${data.error}`;
+                        replies.append(`<div>${workerName}: ${status}</div>`);
+                    }).fail((xhr, errorText, err) => {
+                        replies.append(`<div>${workerName}: error: ${errorText} ${err}</div>`);
+                    });
+                })(ip);
+            }
+        }
+    </script>
+</head>
+<body>
+    <section>
+        <table>
+            <tr>
+                <td>
+                    <div>
+                        <label for="param_target">Target server</label>
+                        <select id="param_target" onchange="onTargetSelected()"></select>
+                    </div>
+                    <div>
+                        <label for="workers_list">Worker nodes (with public IPs)</label><br>
+                        <select multiple="multiple" id="workers_list" style="height: 200px; width: 200px;"></select>
+                    </div>
+                </td>
+                <td>
+                    <div id="node-replies"></div>
+                </td>
+                <td>
+                    <div>
+                        <label for="param_counters">Counters</label>
+                        <input id="param_counters" type="text" size="7" value="12500" onchange="countersChanged()"/>
+                    </div>
+                    <div>
+                        <label for="param_servers">Servers</label>
+                        <input id="param_servers" type="text" size="4" value="100" onchange="serversChanged()"/>
+                    </div>
+                    <div>
+                        <label for="param_duration">Duration:</label>
+                        <input id="param_duration" size="3" type="text" value="2"/> min(s)
+                    </div>
+                    <div>
+                        <label for="param_interval">Interval:</label>
+                        <input id="param_interval" size="3" type="text" value="15"/> s
+                    </div>
+                    <section>
+                        <button type="button" onclick="startWorkload()">Start</button>
+                        <button type="button" onclick="modifyWorkload()">Modify</button>
+                        <button type="button" onclick="stopWorkload()">Stop</button>
+                    </section>
+
+                </td>
+                <td>
+                    <table>
+                        <tr>
+                            <th></th>
+                            <th>1d</th>
+                            <th>2d</th>
+                            <th>7d</th>
+                        </tr>
+                        <tr>
+                            <td>сpu</td>
+                            <td><button type="button" onclick="selectDay(reports.cpu)">get</button></td>
+                            <td><button type="button" onclick="select2Days(reports.cpu)">get</button></td>
+                            <td><button type="button" onclick="selectWeek(reports.cpu)">get</button></td>
+                        </tr>
+                        <tr>
+                            <td>mem</td>
+                            <td><button type="button" onclick="selectDay(reports.mem)">get</button></td>
+                            <td><button type="button" onclick="select2Days(reports.mem)">get</button></td>
+                            <td><button type="button" onclick="selectWeek(reports.mem)">get</button></td>
+                        </tr>
+                        <tr>
+                            <td>ifaces</td>
+                            <td><button type="button" onclick="selectDay(reports.ifaces)">get</button></td>
+                            <td><button type="button" onclick="select2Days(reports.ifaces)">get</button></td>
+                            <td><button type="button" onclick="selectWeek(reports.ifaces)">get</button></td>
+                        </tr>
+                    </table>
+                </td>
+            </tr>
+        </table>
+    </section>
+    <section>
+        Batch size: <input id="batch_size" /> <button type="button" onclick="setBatchSize()">Apply</button>
+    </section>
+    <section>
+        <div>Planned metrics total: <span id="planned_total"></span></div>
+        <div>Planned metrics per min: <span id="planned_per_min"></span></div>
+        <div>Planned metrics per 10 sec: <span id="planned_per_10sec"></span></div>
+        <div>Planned metrics per sec: <span id="planned_per_sec"></span></div>
+        <div><button type="button" onclick="updatePlanned()">sync</button></div>
+    </section>
+    <section>
+        <div>
+            Received so far: <span id="rcv_so_far"></span>
+        </div>
+        <div>
+            <button type="button" onclick="resetInfo()">reset</button>
+        </div>
+    </section>
+    <section>
+        <pre id="container"></pre>
+    </section>
+
+
+    <script type="text/javascript" src="http://ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js"></script>
+    <script type="text/javascript">
+        function logString(str) {
+            $("#container").append(`<p>${str}</p>`);
+        }
+        function rnd(from, to) {
+            return Math.floor(Math.random() * (to-from+1)) + from;
+        }
+        function to2d(n) {
+            const prefix = n<10 ? '0' : "";
+            return `${prefix}${n}`;
+        }
+
+        const reports = {
+            cpu: [ // 1919705063
+                19193516571,
+                19193516653,
+                19193516654,
+                19193516655,
+                19193516656,
+                19193516657,
+                19193516660,
+                19193516662,
+                19193516663,
+                19193516664,
+            ],
+            mem: [ // 1919705064
+                19193516645,
+                19193516647,
+                19193516651,
+                19193516652,
+                19193516604,
+                19193516624,
+                19193516605,
+                19193516625
+            ],
+            ifaces: [ // 19191031166
+                19194626773,
+                19194627006,
+                19194627000,
+                19194627007,
+                19194627011,
+                19194627021,
+                19194627004,
+                19194627017,
+                19194626772,
+                19194627005,
+                19194626774,
+                19194711303,
+                19194627012,
+                19194711304,
+                19194626776,
+                19194627014,
+                19194626775,
+                19194627013,
+                19194627001,
+                19194627010,
+                19194627002,
+                19194627020,
+                19194626777,
+                19194627015,
+                19194627003,
+                19194627016
+            ],
+        };
+        async function selectDay(cuids) {
+            let day = rnd(6, 11);
+            const results = await selectData(`2019-05-${to2d(day)} 00:00:00`, `2019-05-${to2d(day)} 23:59:59`, cuids);
+            logString(`[${target.name}] 1 day report of ${cuids.length} counter loaded in ${results.ms} ms (${results.records} records)`);
+        }
+
+        async function select2Days(cuids) {
+            let from = rnd(6, 11);
+            let to = from + 1;
+            const results = await selectData(`2019-05-${to2d(from)} 00:00:00`, `2019-05-${to2d(to)} 23:59:59`, cuids);
+            logString(`[${target.name}] 2 days report of ${cuids.length} counter loaded in ${results.ms} ms (${results.records} records)`);
+        }
+        async function selectWeek(cuids) {
+            const results = await selectData('2019-05-06 00:00:00', '2019-05-12 23:59:59', cuids);
+            logString(`[${target.name}] week report of ${cuids.length} counter loaded in ${results.ms} ms (${results.records} records)`);
+        }
+        function selectDataParallel(from, to, cuids) {
+            let promises = [];
+            for (let cuid of cuids) {
+                const prom = new Promise((resolve, reject) => {
+                    const query = "from_time="+encodeURIComponent(from)
+                        +  "&to_time="+encodeURIComponent(to)
+                        +  "&counter_uid="+encodeURIComponent(cuids[0]);
+                    $.ajax({
+                        url: `http://${target.extIp}:3001?${query}`,
+                        method: "get",
+                    }).done(data => {
+                        console.log(data);
+                        let ar = data.match(/Got (\d+) rows via (\d+) ms/);
+                        if (ar) {
+                            resolve({
+                                records: parseInt(ar[1], 10),
+                                ms: parseInt(ar[2], 10),
+                            });
+                        } else {
+                            reject(`data '${data}' doesn't patch expected pattern`)
+                        }
+                    });
+                });
+                promises.push(prom);
+            }
+            return Promise.all(promises);
+        }
+        function selectData(from, to, cuids) {
+            const cuids_s = cuids.join(",");
+            return new Promise((resolve, reject) => {
+                const query = "from_time="+encodeURIComponent(from)
+                    +  "&to_time="+encodeURIComponent(to)
+                    +  "&counter_uids="+encodeURIComponent(cuids_s);
+                $.ajax({
+                    url: `http://${target.extIp}:3001?${query}`,
+                    method: "get",
+                }).done(data => {
+                    console.log(data);
+                    let ar = data.match(/Got (\d+) rows via (\d+) ms/);
+                    if (ar) {
+                        resolve({
+                            records: parseInt(ar[1], 10),
+                            ms: parseInt(ar[2], 10),
+                        });
+                    } else {
+                        reject(`data '${data}' doesn't patch expected pattern`)
+                    }
+                });
+            });
+        }
+        function getBatchSize() {
+            $.ajax({
+                url: `http://${targetServerEndpoint}/batch`,
+                method: "get",
+                dataType: "json"
+            }).done(data => {
+                $("#batch_size").val(data.batch_size);
+            });
+        }
+        function setBatchSize() {
+            let bs = parseInt($("#batch_size").val(), 10);
+            $.ajax({
+                url: `http://${targetServerEndpoint}/batch`,
+                method: "post",
+                data: {size: bs}
+            });
+        }
+        function wsConnect() {
+            const socket = new WebSocket("ws://"+targetServerEndpoint+"/ws");
+            socket.onopen = function() {
+                logString("Socket is open");
+            };
+            socket.onmessage = function (e) {
+                logString(e.data);
+                processStatsLine(e.data);
+            };
+            socket.onclose = function () {
+                logString("Socket closed");
+            };
+            return socket;
+        }
+        function getInstances() {
+            return new Promise((resolve, reject) => {
+                $.ajax({
+                    url: "/instances",
+                    dataType: "json"
+                }).done(resolve);
+
+            });
+        }
+        function fillWorkers(workers) {
+            for (let name in workers) {
+                const ip = workers[name];
+
+                $("#workers_list").append(
+                    new Option(name, ip, true, true)
+                );
+            }
+        }
+
+        function onTargetSelected() {
+            if (currentWs) {
+                currentWs.close();
+            }
+            const selected = $("#param_target").val();
+            // const intIp = allTargets[selected];
+            const extIp = allWorkers[selected];
+            console.log(allWorkers, selected, extIp);
+            targetServerEndpoint = `${extIp}:6060`;
+            target.name = selected;
+            target.extIp = extIp;
+            target.intIp = allTargets[selected];
+            getBatchSize();
+            currentWs = wsConnect();
+        }
+
+        $(function () {
+            getInstances().then(workers => {
+                allWorkers = workers;
+                fillWorkers(workers);
+                initializeWorkers();
+                for (let name in allTargets) {
+                    if (undefined === workers[name]) {
+                        delete allTargets[name];
+                    }
+                }
+                const select = $("#param_target");
+                for (let name in allTargets) {
+                    select.append(new Option(name, name, false, false));
+                }
+                select.val('');
+            });
+        });
+    </script>
+</body>
+</html>
